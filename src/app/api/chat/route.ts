@@ -1,28 +1,42 @@
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
 
-export const runtime = "nodejs"; // ✅ Force Node runtime to support OpenAI SDK
+// ✅ Ensure Node.js runtime (required for OpenAI SDK)
+export const runtime = "nodejs";
 
 const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY!,
+  apiKey: process.env.OPENAI_API_KEY || "",
 });
 
 export async function POST(req: Request) {
   try {
-    const { message } = await req.json();
+    // 🟣 Parse request body
+    const body = await req.json();
+    const message = body?.message;
 
     if (!message || typeof message !== "string") {
-      return NextResponse.json({ error: "Invalid input message." }, { status: 400 });
+      return NextResponse.json(
+        { error: "Invalid input message." },
+        { status: 400 }
+      );
     }
 
-    // 🧠 Generate assistant response
+    if (!process.env.OPENAI_API_KEY) {
+      console.error("❌ Missing OPENAI_API_KEY in server environment!");
+      return NextResponse.json(
+        { error: "Server missing AI configuration." },
+        { status: 500 }
+      );
+    }
+
+    // 🤖 Generate AI response
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
         {
           role: "system",
           content:
-            "You are MindShield-AI — a friendly and cyber-aware assistant integrated into a threat intelligence dashboard. Keep answers short, clear, and contextual.",
+            "You are MindShield-AI — a friendly, concise cybersecurity assistant embedded inside a threat dashboard.",
         },
         { role: "user", content: message },
       ],
@@ -31,13 +45,13 @@ export async function POST(req: Request) {
 
     const reply =
       completion.choices?.[0]?.message?.content ||
-      "⚠️ Sorry, I couldn’t process that right now.";
+      "⚠️ I couldn’t understand that. Try again.";
 
     return NextResponse.json({ reply }, { status: 200 });
-  } catch (error: any) {
-    console.error("Chat API Error:", error);
+  } catch (err: any) {
+    console.error("🔥 Chat API Error:", err?.message || err);
     return NextResponse.json(
-      { error: "Internal server error while processing your chat request." },
+      { error: "Failed to process chat request." },
       { status: 500 }
     );
   }
