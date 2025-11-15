@@ -2,10 +2,9 @@ import { NextResponse } from "next/server";
 import axios from "axios";
 import OpenAI from "openai";
 
-// ✅ Force Node.js runtime for OpenAI SDK
 export const runtime = "nodejs";
 
-// ❗ Safe OpenAI initialization
+// Safe OpenAI init
 const openai = process.env.OPENAI_API_KEY
   ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
   : null;
@@ -21,21 +20,22 @@ export async function POST(req: Request) {
       );
     }
 
-    // ❗ Check RapidAPI key
+    // Check RapidAPI key
     if (!process.env.RAPIDAPI_KEY) {
       return NextResponse.json(
         {
-          error:
-            "Server missing RapidAPI key for BreachDirectory. Please configure RAPIDAPI_KEY.",
+          error: "Missing RAPIDAPI_KEY for breach lookup.",
         },
         { status: 500 }
       );
     }
 
-    // 🧠 BreachDirectory API request
     let breached = false;
     let breaches: any[] = [];
 
+    // ----------------------------
+    // 🔍 BREACH LOOKUP (RapidAPI)
+    // ----------------------------
     try {
       const response = await axios.get(
         `https://breachdirectory.p.rapidapi.com/?func=auto&term=${encodeURIComponent(
@@ -54,75 +54,123 @@ export async function POST(req: Request) {
         breached = breaches.length > 0;
       }
     } catch (err: any) {
-      console.error(
-        "BreachDirectory API Error:",
-        err?.response?.data || err.message
-      );
+      console.error("🔥 BreachDirectory Error:", err?.response?.data || err);
     }
 
-    // ❗ If no OpenAI key → return fallback
-    if (!openai) {
-      return NextResponse.json(
-        {
-          email,
-          breached,
-          leaks: breaches,
-          aiSummary:
-            "AI summarization unavailable — missing OpenAI API Key on server.",
-        },
-        { status: 200 }
-      );
-    }
+    // ----------------------------
+    // 🧮 HEURISTIC SCORE (0–60)
+    // ----------------------------
+    let heuristicScore = 0;
 
-    // 🧠 AI Risk Summary
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are a cybersecurity AI assistant. Summarize breach risk, exposed data, and security steps clearly.",
-        },
-        {
-          role: "user",
-          content: `Email: ${email}
-Found in ${breaches.length} breaches.
-Examples: ${breaches
-            .slice(0, 3)
-            .map((b: any) => b.name || b.title || "Unknown Source")
-            .join(", ")}.
+    // More breaches = more score
+    heuristicScore += Math.min(breaches.length * 8, 30);
 
-Provide:
-1. Risk Level (Low/Medium/High)
-2. Possible data exposed
-3. Steps to secure the account
-4. A short reminder at the end.`,
-        },
-      ],
-      max_tokens: 300,
+    // Look at data classes
+    const sensitiveTypes = ["password", "bank", "ssn", "credit", "api key"];
+    let sensitiveHits = 0;
+
+    breaches.forEach((b) => {
+      const dataClasses: string[] = b.data_classes || [];
+      dataClasses.forEach((d) => {
+        if (sensitiveTypes.some((s) => d.toLowerCase().includes(s))) {
+          sensitiveHits++;
+        }
+      });
     });
 
-    const aiSummary =
-      completion.choices?.[0]?.message?.content ||
-      "AI summary unavailable.";
+    heuristicScore += Math.min(sensitiveHits * 5, 30);
 
+    heuristicScore = Math.min(heuristicScore, 60);
+
+    // ----------------------------
+    // 🧠 AI RISK SCORE (0–100)
+    // ----------------------------
+    let aiScore = 0;
+    let aiSummary = "AI summary unavailable.";
+
+    if (openai) {
+      const ai = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "system",
+            content:
+              "You assess data breach severity. First output a risk score (0–100), then a compact explanation.",
+          },
+          {
+            role: "user",
+            content: `Email: ${email}
+Total breaches: ${breaches.length}
+Data examples: ${breaches
+              .slice(0, 3)
+              .map((b) => (b.data_classes || []).join(", "))
+              .join("; ")}
+
+Return format:
+<number>
+<short explanation>`,
+          },
+        ],
+        max_tokens: 200,
+      });
+
+      const text = ai.choices?.[0]?.message?.content || "0 No explanation.";
+
+      const numberMatch = text.match(/(\d{1,3})/);
+      aiScore = numberMatch ? Math.min(parseInt(numberMatch[1]), 100) : 0;
+
+      aiSummary = text.replace(numberMatch?.[0] || "", "").trim();
+    }
+
+    // ----------------------------
+    // 🎯 FINAL RISK SCORE
+    // ----------------------------
+    const finalScore = Math.round(aiScore * 0.6 + heuristicScore * 0.4);
+
+    // ----------------------------
+    // 🌡️ RISK LEVEL + COLOR
+    // ----------------------------
+    let riskLevel: "low" | "medium" | "high" | "critical" = "low";
+    let color: "green" | "blue" | "red" | "purple" = "green";
+
+    if (finalScore < 30) {
+      riskLevel = "low";
+      color = "green";
+    } else if (finalScore < 60) {
+      riskLevel = "medium";
+      color = "blue";
+    } else if (finalScore < 85) {
+      riskLevel = "high";
+      color = "red";
+    } else {
+      riskLevel = "critical";
+      color = "red";
+    }
+
+    // ----------------------------
+    // FINAL RESPONSE
+    // ----------------------------
     return NextResponse.json(
       {
         email,
         breached,
-        leaks: breaches.map((b: any) => ({
+        leaks: breaches.map((b) => ({
           name: b.name || b.title || "Unknown Source",
           domain: b.domain || "N/A",
           date: b.date || "Unknown",
-          dataClasses: b.data_classes || ["Email", "Password"],
+          dataClasses: b.data_classes || [],
         })),
+        heuristicScore,
+        aiScore,
+        finalScore,
+        riskLevel,
+        color,
         aiSummary,
-        note: "Data from BreachDirectory (RapidAPI).",
       },
       { status: 200 }
     );
   } catch (error: any) {
-    console.error("❌ Data Leak Route Error:", error.message);
+    console.error("🔥 Data Leak Route Error:", error?.message);
     return NextResponse.json(
       { error: "Failed to check data leak." },
       { status: 500 }

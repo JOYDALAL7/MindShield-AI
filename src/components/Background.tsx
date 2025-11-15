@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import Particles, { initParticlesEngine } from "@tsparticles/react";
 import { loadSlim } from "@tsparticles/slim";
 import type { Engine } from "@tsparticles/engine";
@@ -10,36 +10,36 @@ interface BackgroundProps {
 }
 
 export default function Background({ activeScan }: BackgroundProps) {
+  const [init, setInit] = useState(false);
+
   const [config, setConfig] = useState({
     color: "#a855f7",
-    particleCount: 50,
-    speed: 0.7,
+    particleCount: 60,
+    speed: 0.8,
     linkOpacity: 0.25,
   });
 
-  // 🎨 Dynamic visuals based on scan type or result
+  // 💡 Dynamic theme reacting to results
   useEffect(() => {
     switch (activeScan) {
       case "phishing":
       case "purple":
         setConfig({
           color: "#a855f7",
-          particleCount: 60,
-          speed: 0.8,
-          linkOpacity: 0.25,
+          particleCount: 70,
+          speed: 1,
+          linkOpacity: 0.3,
         });
         break;
-
       case "ip":
       case "blue":
         setConfig({
           color: "#3b82f6",
-          particleCount: 70,
-          speed: 0.9,
-          linkOpacity: 0.3,
+          particleCount: 80,
+          speed: 1.1,
+          linkOpacity: 0.35,
         });
         break;
-
       case "dataleak":
       case "red":
         setConfig({
@@ -49,29 +49,25 @@ export default function Background({ activeScan }: BackgroundProps) {
           linkOpacity: 0.4,
         });
         break;
-
       case "green":
         setConfig({
           color: "#22c55e",
-          particleCount: 40,
-          speed: 0.5,
-          linkOpacity: 0.2,
+          particleCount: 50,
+          speed: 0.6,
+          linkOpacity: 0.25,
         });
         break;
-
       default:
         setConfig({
           color: "#6b21a8",
-          particleCount: 50,
-          speed: 0.7,
+          particleCount: 60,
+          speed: 0.8,
           linkOpacity: 0.25,
         });
     }
   }, [activeScan]);
 
-  // 🧠 Initialize the particles engine properly for latest API
-  const [init, setInit] = useState(false);
-
+  // 🧠 Initialize particles engine
   useEffect(() => {
     initParticlesEngine(async (engine: Engine) => {
       await loadSlim(engine);
@@ -82,60 +78,63 @@ export default function Background({ activeScan }: BackgroundProps) {
 
   return (
     <div className="fixed inset-0 -z-10 transition-all duration-700">
-      {/* 🌫️ Animated Glow */}
+      {/* 🌌 Soft Glow Aura */}
       <div
-        className="absolute inset-0 blur-3xl opacity-50 animate-pulse"
+        className="absolute inset-0 blur-[110px] opacity-50 transition-all duration-700"
         style={{
           background: `radial-gradient(circle at 50% 50%, ${config.color}40, transparent 70%)`,
-          transition: "background 0.8s ease",
         }}
       />
 
-      {/* 🪐 Particle Background */}
+      {/* ⭐ Particles */}
       <Particles
-        id="tsparticles"
+        id="mindshield-bg"
         options={{
           fpsLimit: 60,
-          background: {
-            color: { value: "#000000" },
-          },
+          background: { color: "transparent" },
+          detectRetina: true,
+
           interactivity: {
             events: {
               onHover: { enable: true, mode: "repulse" },
               onClick: { enable: true, mode: "push" },
             },
             modes: {
-              repulse: { distance: 120, duration: 0.4 },
+              repulse: { distance: 140, duration: 0.4 },
               push: { quantity: 3 },
             },
           },
+
           particles: {
-            color: { value: config.color },
-            links: {
-              color: config.color,
-              distance: 130,
-              enable: true,
-              opacity: config.linkOpacity,
-              width: 1,
-            },
-            move: {
-              enable: true,
-              speed: config.speed,
-              outModes: { default: "bounce" },
-            },
             number: {
               value: config.particleCount,
               density: {
                 enable: true,
-                width: 800, // ✅ replaced deprecated `area`
-                height: 800,
+                width: 900, // v3 valid density field
+                height: 900,
               },
             },
-            opacity: { value: 0.35 },
+            color: { value: config.color },
             shape: { type: "circle" },
+
+            opacity: { value: 0.35 },
             size: { value: { min: 1, max: 3 } },
+
+            links: {
+              enable: true,
+              color: config.color,
+              distance: 130,
+              opacity: config.linkOpacity,
+              width: 1,
+            },
+
+            move: {
+              enable: true,
+              speed: config.speed,
+              direction: "none",
+              outModes: { default: "bounce" },
+            },
           },
-          detectRetina: true,
         }}
       />
     </div>

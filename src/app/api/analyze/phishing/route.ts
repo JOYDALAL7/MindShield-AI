@@ -1,10 +1,9 @@
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
 
-// ✅ Force Node.js runtime (required for OpenAI SDK)
 export const runtime = "nodejs";
 
-// ❗ Safe lazy OpenAI init (prevents build-time crash)
+// Lazy OpenAI init (safe for build)
 const openai = process.env.OPENAI_API_KEY
   ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
   : null;
@@ -13,7 +12,6 @@ export async function POST(req: Request) {
   try {
     const { url } = await req.json();
 
-    // Validate URL
     if (!url || typeof url !== "string" || !url.startsWith("http")) {
       return NextResponse.json(
         { error: "Invalid URL provided." },
@@ -21,51 +19,97 @@ export async function POST(req: Request) {
       );
     }
 
-    // 🟥 Basic phishing heuristics
-    const suspiciousPatterns = ["login", "verify", "bank", "account", "free", "update"];
-    const isSuspicious = suspiciousPatterns.some((p) =>
-      url.toLowerCase().includes(p)
-    );
+    // --------------------------
+    // 🔍 HEURISTIC RISK SCORING
+    // --------------------------
+    const redFlags = [
+      { pattern: "login", score: 20 },
+      { pattern: "verify", score: 20 },
+      { pattern: "bank", score: 25 },
+      { pattern: "account", score: 15 },
+      { pattern: "secure", score: 10 },
+      { pattern: "update", score: 10 },
+      { pattern: "free", score: 15 },
+      { pattern: ".zip", score: 25 },
+      { pattern: "-secure-", score: 20 },
+      { pattern: "cloudfront", score: 20 },
+    ];
 
-    // ❗ If OpenAI missing → don't break route
-    if (!openai) {
-      console.error("❌ Missing OPENAI_API_KEY on server.");
-      return NextResponse.json(
-        {
-          url,
-          isSuspicious,
-          explanation:
-            "AI risk explanation unavailable (missing OpenAI API key on server).",
-        },
-        { status: 200 }
-      );
-    }
-
-    // 🧠 AI explanation
-    const aiResponse = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are a concise cybersecurity AI that analyzes phishing URL risks and explains them simply.",
-        },
-        {
-          role: "user",
-          content: `URL: ${url}
-Heuristic suspicion: ${isSuspicious}.
-Explain if this URL seems risky and why.`,
-        },
-      ],
-      max_tokens: 200,
+    let heuristicScore = 0;
+    redFlags.forEach(({ pattern, score }) => {
+      if (url.toLowerCase().includes(pattern)) heuristicScore += score;
     });
 
-    const explanation =
-      aiResponse.choices?.[0]?.message?.content ||
-      "Could not generate AI explanation.";
+    heuristicScore = Math.min(heuristicScore, 80); // heuristic max
+
+    // --------------------------
+    // ⚠️ AI RISK SCORING
+    // --------------------------
+    let aiScore = 0;
+    let explanation = "AI model unavailable.";
+
+    if (openai) {
+      const aiResponse = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a cybersecurity AI. Evaluate phishing likelihood from 0 to 100 and explain briefly.",
+          },
+          {
+            role: "user",
+            content: `Give me a phishing risk score (0-100) for this URL and a 2-line explanation:\n${url}`,
+          },
+        ],
+        max_tokens: 150,
+      });
+
+      const text =
+        aiResponse.choices?.[0]?.message?.content || "0|No explanation.";
+
+      // Extract score (first number found)
+      const match = text.match(/(\d{1,3})/);
+      aiScore = match ? Math.min(parseInt(match[1]), 100) : 0;
+
+      explanation = text.replace(match?.[0] || "", "").trim();
+    }
+
+    // --------------------------
+    // 🎯 FINAL RISK SCORE (0–100)
+    // --------------------------
+    const finalScore = Math.min(Math.round(heuristicScore * 0.4 + aiScore * 0.6), 100);
+
+    // --------------------------
+    // 🎨 RISK CATEGORY
+    // --------------------------
+    let riskLevel: "low" | "medium" | "high" | "critical" = "low";
+    let color: "green" | "blue" | "red" | "purple" = "green";
+
+    if (finalScore < 30) {
+      riskLevel = "low";
+      color = "green";
+    } else if (finalScore < 60) {
+      riskLevel = "medium";
+      color = "blue";
+    } else if (finalScore < 85) {
+      riskLevel = "high";
+      color = "red";
+    } else {
+      riskLevel = "critical";
+      color = "red";
+    }
 
     return NextResponse.json(
-      { url, isSuspicious, explanation },
+      {
+        url,
+        finalScore,
+        heuristicScore,
+        aiScore,
+        riskLevel,
+        color,
+        explanation,
+      },
       { status: 200 }
     );
   } catch (error: any) {
