@@ -22,11 +22,11 @@ type ScanResult = {
   input: string;
   timestamp: string;
   isRisky: boolean;
-  riskScore?: number; // mapped from backend finalScore
-  riskLevel?: RiskLevel; // mapped from backend riskLevel
-  riskColor?: ScanColor; // mapped from backend color
+  riskScore?: number;
+  riskLevel?: RiskLevel;
+  riskColor?: ScanColor;
   error?: string;
-  [key: string]: any; // keep all original fields
+  [key: string]: any;
 };
 
 const HISTORY_KEY = "mindshield-history";
@@ -36,7 +36,6 @@ export default function Dashboard() {
   const [ip, setIp] = useState("");
   const [email, setEmail] = useState("");
 
-  // Separate results per scan module
   const [phishingResult, setPhishingResult] = useState<ScanResult | null>(null);
   const [ipResult, setIpResult] = useState<ScanResult | null>(null);
   const [dataLeakResult, setDataLeakResult] = useState<ScanResult | null>(null);
@@ -45,9 +44,11 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(false);
   const [activeScan, setActiveScan] = useState<ScanType | null>(null);
   const [scanColor, setScanColor] = useState<ScanColor>("purple");
-
-  // Which tab is open
   const [activeView, setActiveView] = useState<ScanType>("phishing");
+
+  const [insights, setInsights] = useState<string>(
+    "Run a scan to generate insights."
+  );
 
   const currentResult: ScanResult | null =
     activeView === "phishing"
@@ -56,18 +57,18 @@ export default function Dashboard() {
       ? ipResult
       : dataLeakResult;
 
-  // 🔁 Load history from localStorage on first mount
+  // Load history
   useEffect(() => {
     try {
-      const raw = typeof window !== "undefined"
-        ? window.localStorage.getItem(HISTORY_KEY)
-        : null;
+      if (typeof window === "undefined") return;
+      const raw = window.localStorage.getItem(HISTORY_KEY);
       if (!raw) return;
+
       const parsed: ScanResult[] = JSON.parse(raw);
       if (!Array.isArray(parsed)) return;
+
       setHistory(parsed);
 
-      // restore last results per type (for nicer UX after refresh)
       const lastPhishing = parsed.find((h) => h.type === "phishing");
       const lastIp = parsed.find((h) => h.type === "ip");
       const lastData = parsed.find((h) => h.type === "dataleak");
@@ -75,27 +76,103 @@ export default function Dashboard() {
       if (lastIp) setIpResult(lastIp);
       if (lastData) setDataLeakResult(lastData);
     } catch {
-      // ignore corrupted history
+      // ignore
     }
   }, []);
 
-  // 💾 Persist history to localStorage whenever it changes
+  // Persist history
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (!history.length) {
       window.localStorage.removeItem(HISTORY_KEY);
+    } else {
+      window.localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+    }
+  }, [history]);
+
+  // Generate insights from history
+  useEffect(() => {
+    if (!history.length) {
+      setInsights(
+        "No scans yet. Start with a phishing URL, IP, or email to see insights."
+      );
       return;
     }
-    window.localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+
+    const riskyCount = history.filter((h) => h.isRisky && !h.error).length;
+    const safeCount = history.filter((h) => !h.isRisky && !h.error).length;
+    const errorCount = history.filter((h) => !!h.error).length;
+
+    const scored = history.filter((h) => typeof h.riskScore === "number");
+    const avgScore =
+      scored.reduce((sum, h) => sum + (h.riskScore || 0), 0) /
+      (scored.length || 1);
+
+    const last = history[0];
+    const lastTwo = history.slice(0, 2);
+    let trendText = "";
+
+    if (lastTwo.length === 2 && lastTwo[0].riskScore && lastTwo[1].riskScore) {
+      const diff = (lastTwo[0].riskScore || 0) - (lastTwo[1].riskScore || 0);
+      if (Math.abs(diff) < 5)
+        trendText = "Risk level is stable compared to your last scan.";
+      else if (diff < 0)
+        trendText =
+          "Your latest scan looks safer than the previous one. Keep it up!";
+      else
+        trendText =
+          "Your latest scan looks riskier than the previous one. Review suspicious sources.";
+    }
+
+    const textLines: string[] = [];
+
+    textLines.push(
+      `You’ve run ${history.length} total scans so far, with around ${Math.round(
+        avgScore
+      )}/100 average risk.`
+    );
+
+    if (riskyCount > safeCount) {
+      textLines.push(
+        "Most of your inputs are being flagged as risky — you may be exploring a lot of unknown or unsafe links."
+      );
+    } else if (safeCount > riskyCount) {
+      textLines.push(
+        "Most of your inputs look safe — good digital hygiene! Keep verifying before you click."
+      );
+    } else {
+      textLines.push(
+        "Your safe vs risky results are balanced — stay cautious with links and login pages."
+      );
+    }
+
+    if (errorCount > 0) {
+      textLines.push(
+        `Some scans failed (${errorCount}). If this keeps happening, check your API keys or connection.`
+      );
+    }
+
+    if (last) {
+      textLines.push(
+        `Last scan: ${last.type.toUpperCase()} · ${
+          last.riskLevel || (last.isRisky ? "High" : "Low")
+        } risk for "${last.input.slice(0, 40)}${
+          last.input.length > 40 ? "..." : ""
+        }".`
+      );
+    }
+
+    if (trendText) textLines.push(trendText);
+
+    setInsights(textLines.join(" "));
   }, [history]);
 
   const handleAnalyze = async (type: ScanType) => {
     try {
       setLoading(true);
       setActiveScan(type);
-      setActiveView(type); // switch view to the one being scanned
+      setActiveView(type);
 
-      // initial background based on scan type
       if (type === "phishing") setScanColor("purple");
       else if (type === "ip") setScanColor("blue");
       else if (type === "dataleak") setScanColor("red");
@@ -110,7 +187,6 @@ export default function Dashboard() {
 
       const base = res?.data || {};
 
-      // Prefer backend finalScore → riskScore
       const backendScore =
         typeof base.finalScore === "number"
           ? base.finalScore
@@ -118,16 +194,14 @@ export default function Dashboard() {
           ? base.riskScore
           : undefined;
 
-      // Map backend riskLevel ("low" | "medium" | "high" | "critical") → "Low" | "Medium" | "High"
       let mappedLevel: RiskLevel | undefined;
       if (typeof base.riskLevel === "string") {
         const lower = base.riskLevel.toLowerCase();
         if (lower === "low") mappedLevel = "Low";
         else if (lower === "medium") mappedLevel = "Medium";
-        else mappedLevel = "High"; // treat both "high" and "critical" as High
+        else mappedLevel = "High";
       }
 
-      // Map backend color to ScanColor if possible
       const mappedColor: ScanColor | undefined =
         base.color === "purple" ||
         base.color === "blue" ||
@@ -136,10 +210,9 @@ export default function Dashboard() {
           ? base.color
           : undefined;
 
-      // isRisky based on backend score or flags
       let isRisky = false;
       if (typeof backendScore === "number") {
-        isRisky = backendScore >= 40; // threshold
+        isRisky = backendScore >= 40;
       } else {
         isRisky =
           !!base.isSuspicious ||
@@ -161,12 +234,10 @@ export default function Dashboard() {
         riskColor: mappedColor,
       };
 
-      // save per-module
       if (type === "phishing") setPhishingResult(newResult);
       else if (type === "ip") setIpResult(newResult);
       else setDataLeakResult(newResult);
 
-      // global history for analytics
       setHistory((prev) => [newResult, ...prev]);
     } catch (error: any) {
       const inputValue = type === "phishing" ? url : type === "ip" ? ip : email;
@@ -195,7 +266,6 @@ export default function Dashboard() {
     }
   };
 
-  // Clear history + reset meters
   const handleClearHistory = () => {
     setHistory([]);
     setPhishingResult(null);
@@ -204,7 +274,26 @@ export default function Dashboard() {
     setScanColor("purple");
   };
 
-  // Auto-change color based on current tab's result
+  // Download report as JSON
+  const handleDownloadReport = () => {
+    if (typeof window === "undefined" || !history.length) return;
+    const blob = new Blob([JSON.stringify(history, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `mindshield-report-${new Date()
+      .toISOString()
+      .slice(0, 19)
+      .replace(/[:T]/g, "-")}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  // Change particle color based on current result
   useEffect(() => {
     if (!currentResult || (currentResult as any).error) return;
 
@@ -229,8 +318,50 @@ export default function Dashboard() {
     }
   }, [currentResult, loading]);
 
+  // When clicking a recent scan, restore it
+  const handleSelectScanFromHistory = (scan: ScanResult) => {
+    setActiveView(scan.type);
+
+    if (scan.type === "phishing") {
+      setUrl(scan.input);
+      setPhishingResult(scan);
+    } else if (scan.type === "ip") {
+      setIp(scan.input);
+      setIpResult(scan);
+    } else {
+      setEmail(scan.input);
+      setDataLeakResult(scan);
+    }
+  };
+
+  const quickActions = [
+    {
+      label: "Test a phishing login",
+      type: "phishing" as ScanType,
+      value: "https://secure-paypal.com-login.net",
+      set: setUrl,
+    },
+    {
+      label: "Check a suspicious IP",
+      type: "ip" as ScanType,
+      value: "5.255.255.5",
+      set: setIp,
+    },
+    {
+      label: "Check leaked email",
+      type: "dataleak" as ScanType,
+      value: "user@example.com",
+      set: setEmail,
+    },
+  ];
+
+  const runQuickAction = (qa: (typeof quickActions)[number]) => {
+    qa.set(qa.value);
+    handleAnalyze(qa.type);
+  };
+
   return (
-    <main className="relative min-h-screen bg-gradient-to-br from-gray-950 via-black to-gray-900 text-white overflow-hidden">
+    <main className="relative min-h-screen bg-background text-foreground overflow-hidden transition-colors duration-300">
       <Background activeScan={scanColor} />
       <Navbar />
 
@@ -239,22 +370,56 @@ export default function Dashboard() {
         initial={{ opacity: 0, y: -30 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.6 }}
-        className="text-5xl font-bold text-center pt-28 mb-6 bg-clip-text text-transparent bg-gradient-to-r from-purple-400 to-blue-500"
+        className="text-5xl font-bold text-center pt-28 mb-3 bg-clip-text text-transparent bg-gradient-to-r from-purple-400 to-blue-500"
       >
         🛡️ MindShield-AI Dashboard
       </motion.h1>
 
-      {/* Summary strip */}
+      {/* Quick actions */}
+      <motion.div
+        initial={{ opacity: 0, y: -10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.15 }}
+        className="max-w-4xl mx-auto px-4 mb-5 flex flex-wrap justify-center gap-2"
+      >
+        {quickActions.map((qa) => (
+          <button
+            key={qa.label}
+            onClick={() => runQuickAction(qa)}
+            className="text-xs sm:text-sm px-3 py-1.5 rounded-full bg-card/70 hover:bg-card border border-border text-muted-foreground transition-all"
+          >
+            {qa.label}
+          </button>
+        ))}
+      </motion.div>
+
+      {/* Summary strip + insights */}
       <SummaryStrip
         history={history}
         loading={loading}
         onClear={handleClearHistory}
+        onDownload={handleDownloadReport}
       />
+
+      {/* Insights bubble */}
+      <motion.div
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.2 }}
+        className="max-w-5xl mx-auto px-4 mb-6"
+      >
+        <Card className="bg-card border border-border rounded-2xl p-4 text-xs sm:text-sm text-muted-foreground shadow-sm">
+          <div className="flex items-start gap-2">
+            <span className="mt-0.5 text-lg">💡</span>
+            <p className="leading-relaxed">{insights}</p>
+          </div>
+        </Card>
+      </motion.div>
 
       <div className="max-w-5xl mx-auto px-4 grid gap-8 pb-24">
         {/* Tabs */}
         <div className="flex justify-center">
-          <div className="inline-flex rounded-full bg-black/40 border border-white/10 p-1">
+          <div className="inline-flex rounded-full bg-card/80 border border-border p-1">
             {(["phishing", "ip", "dataleak"] as ScanType[]).map((tab) => {
               const label =
                 tab === "phishing"
@@ -270,7 +435,7 @@ export default function Dashboard() {
                   className={`px-4 py-1.5 text-xs sm:text-sm rounded-full transition-all ${
                     active
                       ? "bg-purple-600 text-white shadow-lg"
-                      : "text-gray-300 hover:bg-white/10"
+                      : "text-muted-foreground hover:bg-muted"
                   }`}
                 >
                   {label}
@@ -333,7 +498,7 @@ export default function Dashboard() {
           )}
         </motion.div>
 
-        {/* Results + Risk Meter for CURRENT tab only */}
+        {/* Results + Risk Meter */}
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
@@ -344,7 +509,7 @@ export default function Dashboard() {
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
-              className="text-center text-gray-400"
+              className="text-center text-muted-foreground"
             >
               🔍 Scanning... please wait
             </motion.div>
@@ -360,11 +525,11 @@ export default function Dashboard() {
                 className="grid gap-6 md:grid-cols-2"
               >
                 {currentResult.error && (
-                  <Alert className="bg-gradient-to-br from-red-900/60 to-black/70 border border-red-800 rounded-2xl p-6 shadow-lg backdrop-blur-xl">
-                    <h3 className="text-lg font-semibold mb-2 text-red-400">
+                  <Alert className="bg-destructive/10 border border-destructive rounded-2xl p-6 shadow-lg backdrop-blur-xl text-destructive-foreground">
+                    <h3 className="text-lg font-semibold mb-2">
                       ❌ Scan Failed
                     </h3>
-                    <p className="text-gray-300">{currentResult.error}</p>
+                    <p>{currentResult.error}</p>
                   </Alert>
                 )}
 
@@ -429,30 +594,33 @@ export default function Dashboard() {
           )}
         </motion.div>
 
-        {/* Global Analytics across ALL scans */}
         {history.length > 0 && <Analytics data={history} />}
 
-        {/* Recent scan list */}
         {history.length > 0 && (
-          <RecentScans history={history.slice(0, 6)} />
+          <RecentScans
+            history={history.slice(0, 6)}
+            onSelect={handleSelectScanFromHistory}
+          />
         )}
 
-        {/* Chat Assistant */}
         <ChatAssistant />
       </div>
     </main>
   );
 }
 
-/* Summary strip at top */
+/* ------------ Summary strip ------------- */
+
 function SummaryStrip({
   history,
   loading,
   onClear,
+  onDownload,
 }: {
   history: ScanResult[];
   loading: boolean;
   onClear: () => void;
+  onDownload: () => void;
 }) {
   const total = history.length;
   const risky = history.filter((h) => h.isRisky).length;
@@ -468,54 +636,111 @@ function SummaryStrip({
   const ipCount = history.filter((h) => h.type === "ip").length;
   const dataLeakCount = history.filter((h) => h.type === "dataleak").length;
 
+  const getStreak = () => {
+    if (!history.length) return 0;
+    const days = Array.from(
+      new Set(
+        history.map((h) => new Date(h.timestamp).toISOString().slice(0, 10))
+      )
+    ).sort();
+    if (!days.length) return 0;
+
+    let streak = 1;
+    for (let i = days.length - 1; i > 0; i--) {
+      const d1 = new Date(days[i]);
+      const d0 = new Date(days[i - 1]);
+      const diffDays = (d1.getTime() - d0.getTime()) / (1000 * 60 * 60 * 24);
+      if (diffDays === 1) streak++;
+      else break;
+    }
+    return streak;
+  };
+
+  const streak = getStreak();
+
+  let trendLabel = "Stable";
+  if (scoredHistory.length >= 2) {
+    const recent = scoredHistory.slice(0, 3);
+    const first = recent[recent.length - 1].riskScore || 0;
+    const last = recent[0].riskScore || 0;
+    const diff = last - first;
+    if (diff <= -10) trendLabel = "Improving";
+    else if (diff >= 10) trendLabel = "Getting riskier";
+  }
+
   return (
     <div className="max-w-5xl mx-auto px-4 mb-6 grid gap-4 md:grid-cols-3">
-      <Card className="bg-white/5 border border-white/10 rounded-2xl p-4 flex flex-col">
+      <Card className="bg-card border border-border rounded-2xl p-4 flex flex-col shadow-sm">
         <div className="flex items-center justify-between">
-          <span className="text-xs uppercase tracking-wide text-gray-400">
+          <span className="text-xs uppercase tracking-wide text-muted-foreground">
             Total scans
           </span>
-          {total > 0 && (
-            <button
-              onClick={onClear}
-              className="text-[10px] px-2 py-1 rounded-full bg-gray-900/70 border border-gray-700 text-gray-300 hover:bg-gray-800"
-            >
-              Clear
-            </button>
-          )}
+          <div className="flex items-center gap-2">
+            {total > 0 && (
+              <button
+                onClick={onDownload}
+                className="text-[10px] px-2 py-1 rounded-full bg-purple-600/90 hover:bg-purple-600 text-white"
+              >
+                Download report
+              </button>
+            )}
+            {total > 0 && (
+              <button
+                onClick={onClear}
+                className="text-[10px] px-2 py-1 rounded-full bg-muted text-muted-foreground hover:bg-muted/80 border border-border"
+              >
+                Clear
+              </button>
+            )}
+          </div>
         </div>
-        <span className="text-2xl font-semibold mt-1">{total}</span>
-        <span className="text-xs text-gray-500 mt-1">
-          {loading ? "Running analysis..." : "Run more scans to build your timeline."}
+        <span className="text-2xl font-semibold mt-1 text-foreground">
+          {total}
+        </span>
+        <span className="text-xs text-muted-foreground mt-1">
+          {loading
+            ? "Running analysis..."
+            : "Build your personal security timeline."}
+        </span>
+        <span className="text-[11px] text-purple-500 mt-2">
+          🔥 Streak: {streak} day{streak === 1 ? "" : "s"} in a row
         </span>
       </Card>
 
-      <Card className="bg-white/5 border border-white/10 rounded-2xl p-4 flex flex-col">
-        <span className="text-xs uppercase tracking-wide text-gray-400">
+      <Card className="bg-card border border-border rounded-2xl p-4 flex flex-col shadow-sm">
+        <span className="text-xs uppercase tracking-wide text-muted-foreground">
           Risk snapshot
         </span>
-        <span className="mt-1 text-sm text-gray-300">
+        <span className="mt-1 text-sm text-foreground">
           🟥 Risky:{" "}
-          <span className="font-semibold text-red-400">{risky}</span> · 🟩 Safe:{" "}
-          <span className="font-semibold text-green-400">{safe}</span>
+          <span className="font-semibold text-red-500">{risky}</span> · 🟩 Safe:{" "}
+          <span className="font-semibold text-green-500">{safe}</span>
         </span>
-        <span className="text-xs text-gray-500 mt-1">
+        <span className="text-xs text-muted-foreground mt-1">
           Avg risk score:{" "}
           {Number.isFinite(averageScore) ? Math.round(averageScore) : 0}
           /100
         </span>
-        <span className="text-[11px] text-gray-500 mt-2">
-          Phishing: {phishingCount} · IP: {ipCount} · Data leak: {dataLeakCount}
+        <span className="text-[11px] text-muted-foreground mt-2 flex flex-wrap gap-1">
+          <span className="px-2 py-0.5 rounded-full bg-purple-500/10 text-purple-600 text-[10px]">
+            Phishing: {phishingCount}
+          </span>
+          <span className="px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-600 text-[10px]">
+            IP: {ipCount}
+          </span>
+          <span className="px-2 py-0.5 rounded-full bg-red-500/10 text-red-600 text-[10px]">
+            Data leak: {dataLeakCount}
+          </span>
         </span>
       </Card>
 
-      <Card className="bg-white/5 border border-white/10 rounded-2xl p-4 flex flex-col">
-        <span className="text-xs uppercase tracking-wide text-gray-400">
+      <Card className="bg-card border border-border rounded-2xl p-4 flex flex-col shadow-sm">
+        <span className="text-xs uppercase tracking-wide text-muted-foreground">
           Last scan
         </span>
         {lastScan ? (
           <>
-            <span className="mt-1 text-sm text-gray-200 capitalize">
+            <span className="mt-1 text-sm text-foreground capitalize">
               {lastScan.type} ·{" "}
               {lastScan.riskLevel
                 ? `${lastScan.riskLevel} risk`
@@ -523,13 +748,16 @@ function SummaryStrip({
                 ? "⚠️ Risky"
                 : "✅ Safe"}
             </span>
-            <span className="text-xs text-gray-500 mt-1 truncate">
+            <span className="text-xs text-muted-foreground mt-1 truncate">
               {new Date(lastScan.timestamp).toLocaleTimeString()} ·{" "}
               {lastScan.input}
             </span>
+            <span className="text-[11px] mt-2 px-2 py-0.5 rounded-full bg-muted border border-border text-muted-foreground inline-flex w-fit">
+              Trend: {trendLabel}
+            </span>
           </>
         ) : (
-          <span className="mt-1 text-sm text-gray-400">
+          <span className="mt-1 text-sm text-muted-foreground">
             No scans yet. Try a test URL or IP.
           </span>
         )}
@@ -538,9 +766,9 @@ function SummaryStrip({
   );
 }
 
-/* Risk Meter Component */
+/* ------------ Risk Meter ------------- */
+
 function RiskMeter({ result }: { result: ScanResult }) {
-  // Prefer mapped riskScore, fallback to backend finalScore, then heuristic fallback
   const backendFinal =
     typeof (result as any).finalScore === "number"
       ? (result as any).finalScore
@@ -565,32 +793,34 @@ function RiskMeter({ result }: { result: ScanResult }) {
   if (level === "High") barColor = "bg-red-500";
 
   return (
-    <Card className="bg-white/5 border border-white/10 rounded-2xl p-4">
+    <Card className="bg-card border border-border rounded-2xl p-4 shadow-sm">
       <div className="flex items-center justify-between mb-2">
         <div>
-          <span className="text-xs uppercase tracking-wide text-gray-400">
+          <span className="text-xs uppercase tracking-wide text-muted-foreground">
             Overall threat score
           </span>
           <div className="flex items-baseline gap-2">
-            <span className="text-3xl font-semibold text-gray-100">
+            <span className="text-3xl font-semibold text-foreground">
               {Math.round(percent)}
             </span>
-            <span className="text-sm text-gray-400">/100 · {level} risk</span>
+            <span className="text-sm text-muted-foreground">
+              /100 · {level} risk
+            </span>
           </div>
         </div>
-        <span className="text-xs px-2 py-1 rounded-full bg-gray-900/70 border border-gray-700 text-gray-300 capitalize">
+        <span className="text-xs px-2 py-1 rounded-full bg-muted border border-border text-muted-foreground capitalize">
           {result.type} scan
         </span>
       </div>
 
-      <div className="w-full h-3 rounded-full bg-gray-800 overflow-hidden mt-2">
+      <div className="w-full h-3 rounded-full bg-muted overflow-hidden mt-2">
         <div
           className={`h-3 ${barColor} transition-all duration-500`}
           style={{ width: `${percent}%` }}
         />
       </div>
 
-      <p className="text-xs text-gray-400 mt-2">
+      <p className="text-xs text-muted-foreground mt-2">
         Higher scores indicate stronger phishing signs, malicious IP reputation, or
         serious data breaches.
       </p>
@@ -598,7 +828,8 @@ function RiskMeter({ result }: { result: ScanResult }) {
   );
 }
 
-/* GlassCard Component */
+/* ------------ Glass input card ------------- */
+
 type GlassColor = "purple" | "blue" | "red";
 
 function GlassCard({
@@ -638,15 +869,19 @@ function GlassCard({
   };
 
   return (
-    <Card className="bg-white/5 border border-white/10 p-6 rounded-2xl backdrop-blur-md hover:shadow-lg transition-all duration-300">
+    <Card className="bg-card border border-border p-6 rounded-2xl backdrop-blur-md hover:shadow-lg transition-all duration-300 shadow-sm">
       <div className="flex items-center justify-between mb-2 gap-2">
-        <h2 className="text-xl font-semibold text-gray-100">{title}</h2>
+        <h2 className="text-xl font-semibold text-foreground">{title}</h2>
         {loading && (
-          <span className="text-xs text-purple-300 animate-pulse">Scanning…</span>
+          <span className="text-xs text-purple-500 animate-pulse">
+            Scanning…
+          </span>
         )}
       </div>
 
-      {helperText && <p className="text-xs text-gray-400 mb-3">{helperText}</p>}
+      {helperText && (
+        <p className="text-xs text-muted-foreground mb-3">{helperText}</p>
+      )}
 
       <div className="flex flex-col sm:flex-row gap-3">
         <Input
@@ -654,7 +889,7 @@ function GlassCard({
           value={value}
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={handleKeyDown}
-          className="bg-gray-800 border-gray-700 text-white placeholder-gray-500"
+          className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
         />
         <Button
           onClick={onScan}
@@ -672,7 +907,7 @@ function GlassCard({
               key={ex}
               type="button"
               onClick={() => onChange(ex)}
-              className="text-xs px-2 py-1 rounded-full bg-gray-800/70 hover:bg-gray-700/80 text-gray-300 border border-gray-700/80"
+              className="text-xs px-2 py-1 rounded-full bg-muted hover:bg-muted/80 text-muted-foreground border border-border"
             >
               Use example
             </button>
@@ -683,7 +918,8 @@ function GlassCard({
   );
 }
 
-/* ResultCard Component with Leak Badges */
+/* ------------ Result card ------------- */
+
 function ResultCard({
   title,
   description,
@@ -696,19 +932,19 @@ function ResultCard({
   leaks?: { name: string; domain: string; date?: string; dataClasses?: string[] }[];
 }) {
   const colors: Record<string, string> = {
-    purple: "from-purple-500/30 to-purple-700/20 border-purple-500/40",
-    red: "from-red-500/30 to-red-700/20 border-red-500/40",
-    green: "from-green-500/30 to-green-700/20 border-green-500/40",
-    blue: "from-blue-500/30 to-blue-700/20 border-blue-500/40",
+    purple: "from-purple-500/20 to-purple-700/10 border-purple-500/40",
+    red: "from-red-500/20 to-red-700/10 border-red-500/40",
+    green: "from-green-500/20 to-green-700/10 border-green-500/40",
+    blue: "from-blue-500/20 to-blue-700/10 border-blue-500/40",
   };
 
   const getBadgeColor = (type: string) => {
     const lower = type.toLowerCase();
-    if (lower.includes("password")) return "bg-red-700/40 text-red-300";
-    if (lower.includes("email")) return "bg-blue-700/40 text-blue-300";
-    if (lower.includes("phone")) return "bg-green-700/40 text-green-300";
-    if (lower.includes("ip")) return "bg-purple-700/40 text-purple-300";
-    return "bg-gray-700/40 text-gray-300";
+    if (lower.includes("password")) return "bg-red-500/20 text-red-500";
+    if (lower.includes("email")) return "bg-blue-500/20 text-blue-500";
+    if (lower.includes("phone")) return "bg-green-500/20 text-green-500";
+    if (lower.includes("ip")) return "bg-purple-500/20 text-purple-500";
+    return "bg-muted text-muted-foreground";
   };
 
   return (
@@ -718,14 +954,16 @@ function ResultCard({
       transition={{ duration: 0.3 }}
       className={`p-5 rounded-2xl bg-gradient-to-br ${colors[color]} border backdrop-blur-md hover:shadow-lg transition-all`}
     >
-      <h4 className="text-lg font-semibold mb-2 text-white">{title}</h4>
-      <p className="text-gray-300 whitespace-pre-wrap leading-relaxed">{description}</p>
+      <h4 className="text-lg font-semibold mb-2 text-foreground">{title}</h4>
+      <p className="text-sm text-muted-foreground whitespace-pre-wrap leading-relaxed">
+        {description}
+      </p>
 
       {leaks?.length ? (
-        <ul className="text-sm text-gray-400 list-disc pl-6 mt-2 space-y-2">
+        <ul className="text-sm text-muted-foreground list-disc pl-6 mt-2 space-y-2">
           {leaks.slice(0, 5).map((l, i) => (
             <li key={i}>
-              <span className="font-medium text-gray-200">
+              <span className="font-medium text-foreground">
                 {l.name || "Unknown Source"}
               </span>{" "}
               ({l.domain}) — {l.date || "Date Unknown"}
@@ -751,8 +989,15 @@ function ResultCard({
   );
 }
 
-/* Small recent scans list */
-function RecentScans({ history }: { history: ScanResult[] }) {
+/* ------------ Recent scans ------------- */
+
+function RecentScans({
+  history,
+  onSelect,
+}: {
+  history: ScanResult[];
+  onSelect: (scan: ScanResult) => void;
+}) {
   if (!history.length) return null;
 
   const labelMap: Record<ScanType, string> = {
@@ -762,28 +1007,32 @@ function RecentScans({ history }: { history: ScanResult[] }) {
   };
 
   return (
-    <Card className="bg-white/5 border border-white/10 rounded-2xl p-4 mt-2">
-      <h3 className="text-sm font-semibold text-gray-100 mb-2">
+    <Card className="bg-card border border-border rounded-2xl p-4 mt-2 shadow-sm">
+      <h3 className="text-sm font-semibold text-foreground mb-2">
         Recent scans
       </h3>
-      <ul className="space-y-1 text-xs text-gray-300">
+      <ul className="space-y-1 text-xs text-muted-foreground">
         {history.map((h) => (
           <li
             key={h.timestamp + h.input}
-            className="flex items-center justify-between gap-2"
+            className="flex items-center justify-between gap-2 cursor-pointer hover:bg-muted rounded-lg px-2 py-1 transition"
+            onClick={() => onSelect(h)}
           >
             <span className="truncate">
-              <span className="px-2 py-0.5 mr-2 rounded-full bg-gray-900/70 border border-gray-700 text-[10px] uppercase tracking-wide">
+              <span className="px-2 py-0.5 mr-2 rounded-full bg-muted border border-border text-[10px] uppercase tracking-wide text-muted-foreground">
                 {labelMap[h.type]}
               </span>
               {h.input}
             </span>
-            <span className="shrink-0 text-[10px] text-gray-500">
+            <span className="shrink-0 text-[10px] text-muted-foreground/80">
               {new Date(h.timestamp).toLocaleTimeString()}
             </span>
           </li>
         ))}
       </ul>
+      <p className="text-[10px] text-muted-foreground mt-2">
+        Tip: Click any item to reopen that scan and view its full report.
+      </p>
     </Card>
   );
 }

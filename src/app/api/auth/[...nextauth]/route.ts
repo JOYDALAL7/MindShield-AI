@@ -10,27 +10,48 @@ const handler = NextAuth({
   ],
 
   pages: {
-    signIn: "/", // Optional: Send users to homepage for login
+    signIn: "/", // login page
   },
 
   callbacks: {
     async redirect() {
-      return "/dashboard";
+      return "/dashboard"; // after login
     },
 
     async jwt({ token, account, profile }) {
-      // Attach user ID when logging in
       if (account && profile) {
-        token.id = profile.sub;
+        const p = profile as any; // FIX TS error: Google profile has extra fields
+
+        // Store Google user data in the token
+        token.id = p.sub;
+        token.name = p.name;
+        token.email = p.email;
+
+        // FIX: GOOGLE PROFILE IMAGE (safe for TypeScript)
+        token.picture =
+          p.picture ||       // Google standard field
+          p.pictureUrl ||    // some providers use this
+          p.avatar_url ||    // GitHub-style
+          null;
       }
+
       return token;
     },
 
     async session({ session, token }) {
-      // If session.user exists, safely attach the token id
-      if (session?.user) {
+      if (session.user) {
+        // Pass basic fields
         session.user.id = token.id as string;
+        session.user.name = token.name as string;
+        session.user.email = token.email as string;
+
+        // FIX: PASS IMAGE TO FRONTEND
+        session.user.image =
+          (token.picture as string) ||
+          session.user.image ||
+          null;
       }
+
       return session;
     },
   },
