@@ -81,7 +81,7 @@ export default function AboutPage() {
         >
           <Sparkles className="w-6 h-6 text-purple-400 mx-auto mb-3" />
           <p className="text-gray-500 text-sm">
-            Built with ❤️ by Joy — powered by Next.js, OpenAI & modern cybersecurity.
+            Built with ❤️ by Joy 
           </p>
         </motion.div>
 
