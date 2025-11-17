@@ -1,12 +1,13 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, KeyboardEvent } from "react";
 import { motion } from "framer-motion";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Alert } from "@/components/ui/alert";
 import axios from "axios";
+
 import Navbar from "@/components/Navbar";
 import Background from "@/components/Background";
 import Analytics from "@/components/Analytics";
@@ -14,7 +15,6 @@ import ChatAssistant from "@/components/ChatAssistant";
 
 type ScanType = "phishing" | "ip" | "dataleak";
 type ScanColor = "purple" | "blue" | "red" | "green";
-
 type RiskLevel = "Low" | "Medium" | "High";
 
 type ScanResult = {
@@ -22,49 +22,130 @@ type ScanResult = {
   input: string;
   timestamp: string;
   isRisky: boolean;
-  riskScore?: number;
-  riskLevel?: RiskLevel;
-  riskColor?: ScanColor;
-  // existing API fields
-  [key: string]: any;
+  riskScore?: number; // mapped from backend finalScore
+  riskLevel?: RiskLevel; // mapped from backend riskLevel
+  riskColor?: ScanColor; // mapped from backend color
+  error?: string;
+  [key: string]: any; // keep all original fields
 };
+
+const HISTORY_KEY = "mindshield-history";
 
 export default function Dashboard() {
   const [url, setUrl] = useState("");
   const [ip, setIp] = useState("");
   const [email, setEmail] = useState("");
-  const [result, setResult] = useState<ScanResult | null>(null);
+
+  // Separate results per scan module
+  const [phishingResult, setPhishingResult] = useState<ScanResult | null>(null);
+  const [ipResult, setIpResult] = useState<ScanResult | null>(null);
+  const [dataLeakResult, setDataLeakResult] = useState<ScanResult | null>(null);
+
   const [history, setHistory] = useState<ScanResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [activeScan, setActiveScan] = useState<ScanType | null>(null);
   const [scanColor, setScanColor] = useState<ScanColor>("purple");
 
+  // Which tab is open
+  const [activeView, setActiveView] = useState<ScanType>("phishing");
+
+  const currentResult: ScanResult | null =
+    activeView === "phishing"
+      ? phishingResult
+      : activeView === "ip"
+      ? ipResult
+      : dataLeakResult;
+
+  // 🔁 Load history from localStorage on first mount
+  useEffect(() => {
+    try {
+      const raw = typeof window !== "undefined"
+        ? window.localStorage.getItem(HISTORY_KEY)
+        : null;
+      if (!raw) return;
+      const parsed: ScanResult[] = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return;
+      setHistory(parsed);
+
+      // restore last results per type (for nicer UX after refresh)
+      const lastPhishing = parsed.find((h) => h.type === "phishing");
+      const lastIp = parsed.find((h) => h.type === "ip");
+      const lastData = parsed.find((h) => h.type === "dataleak");
+      if (lastPhishing) setPhishingResult(lastPhishing);
+      if (lastIp) setIpResult(lastIp);
+      if (lastData) setDataLeakResult(lastData);
+    } catch {
+      // ignore corrupted history
+    }
+  }, []);
+
+  // 💾 Persist history to localStorage whenever it changes
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!history.length) {
+      window.localStorage.removeItem(HISTORY_KEY);
+      return;
+    }
+    window.localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+  }, [history]);
+
   const handleAnalyze = async (type: ScanType) => {
     try {
       setLoading(true);
       setActiveScan(type);
-      setResult(null);
+      setActiveView(type); // switch view to the one being scanned
 
+      // initial background based on scan type
       if (type === "phishing") setScanColor("purple");
       else if (type === "ip") setScanColor("blue");
       else if (type === "dataleak") setScanColor("red");
 
       let res;
-      if (type === "phishing") res = await axios.post("/api/analyze/phishing", { url });
-      else if (type === "ip") res = await axios.post("/api/analyze/ip", { ip });
-      else if (type === "dataleak") res = await axios.post("/api/analyze/dataleak", { email });
+      if (type === "phishing")
+        res = await axios.post("/api/analyze/phishing", { url: url.trim() });
+      else if (type === "ip")
+        res = await axios.post("/api/analyze/ip", { ip: ip.trim() });
+      else if (type === "dataleak")
+        res = await axios.post("/api/analyze/dataleak", { email: email.trim() });
 
       const base = res?.data || {};
 
-      // 🔢 Prefer backend riskScore if present
+      // Prefer backend finalScore → riskScore
+      const backendScore =
+        typeof base.finalScore === "number"
+          ? base.finalScore
+          : typeof base.riskScore === "number"
+          ? base.riskScore
+          : undefined;
+
+      // Map backend riskLevel ("low" | "medium" | "high" | "critical") → "Low" | "Medium" | "High"
+      let mappedLevel: RiskLevel | undefined;
+      if (typeof base.riskLevel === "string") {
+        const lower = base.riskLevel.toLowerCase();
+        if (lower === "low") mappedLevel = "Low";
+        else if (lower === "medium") mappedLevel = "Medium";
+        else mappedLevel = "High"; // treat both "high" and "critical" as High
+      }
+
+      // Map backend color to ScanColor if possible
+      const mappedColor: ScanColor | undefined =
+        base.color === "purple" ||
+        base.color === "blue" ||
+        base.color === "red" ||
+        base.color === "green"
+          ? base.color
+          : undefined;
+
+      // isRisky based on backend score or flags
       let isRisky = false;
-      if (typeof base.riskScore === "number") {
-        isRisky = base.riskScore >= 40;
+      if (typeof backendScore === "number") {
+        isRisky = backendScore >= 40; // threshold
       } else {
         isRisky =
           !!base.isSuspicious ||
           !!base.breached ||
-          (typeof base.maliciousCount === "number" && base.maliciousCount > 0);
+          (typeof base.maliciousCount === "number" &&
+            base.maliciousCount > 0);
       }
 
       const inputValue = type === "phishing" ? url : type === "ip" ? ip : email;
@@ -72,26 +153,41 @@ export default function Dashboard() {
       const newResult: ScanResult = {
         ...base,
         type,
-        input: inputValue,
+        input: inputValue.trim(),
         timestamp: new Date().toISOString(),
         isRisky,
-        riskScore: typeof base.riskScore === "number" ? base.riskScore : undefined,
-        riskLevel: base.riskLevel as RiskLevel | undefined,
-        riskColor: base.riskColor as ScanColor | undefined,
+        riskScore: backendScore,
+        riskLevel: mappedLevel,
+        riskColor: mappedColor,
       };
 
-      setResult(newResult);
+      // save per-module
+      if (type === "phishing") setPhishingResult(newResult);
+      else if (type === "ip") setIpResult(newResult);
+      else setDataLeakResult(newResult);
+
+      // global history for analytics
       setHistory((prev) => [newResult, ...prev]);
-    } catch (error) {
+    } catch (error: any) {
       const inputValue = type === "phishing" ? url : type === "ip" ? ip : email;
+
+      const message =
+        error?.response?.data?.error ||
+        error?.message ||
+        "Error analyzing input. Please try again.";
+
       const errorResult: ScanResult = {
         type,
-        input: inputValue,
+        input: inputValue.trim(),
         timestamp: new Date().toISOString(),
         isRisky: true,
-        error: "Error analyzing input. Please try again.",
+        error: message,
       };
-      setResult(errorResult);
+
+      if (type === "phishing") setPhishingResult(errorResult);
+      else if (type === "ip") setIpResult(errorResult);
+      else setDataLeakResult(errorResult);
+
       setHistory((prev) => [errorResult, ...prev]);
     } finally {
       setLoading(false);
@@ -99,27 +195,46 @@ export default function Dashboard() {
     }
   };
 
-  // 🌈 Auto-change color on safe / risky result
-  useEffect(() => {
-    if (!result || (result as any).error) return;
+  // Clear history + reset meters
+  const handleClearHistory = () => {
+    setHistory([]);
+    setPhishingResult(null);
+    setIpResult(null);
+    setDataLeakResult(null);
+    setScanColor("purple");
+  };
 
-    if (typeof result.riskScore === "number") {
-      if (result.riskScore >= 70) setScanColor("red");
-      else if (result.riskScore >= 35) setScanColor("purple");
+  // Auto-change color based on current tab's result
+  useEffect(() => {
+    if (!currentResult || (currentResult as any).error) return;
+
+    if (currentResult.riskColor) {
+      setScanColor(currentResult.riskColor);
+      return;
+    }
+
+    const score =
+      typeof currentResult.riskScore === "number"
+        ? currentResult.riskScore
+        : undefined;
+
+    if (typeof score === "number") {
+      if (score >= 70) setScanColor("red");
+      else if (score >= 35) setScanColor("purple");
       else setScanColor("green");
-    } else if (result.isRisky) {
+    } else if (currentResult.isRisky) {
       setScanColor("red");
-    } else if (!loading && result) {
+    } else if (!loading) {
       setScanColor("green");
     }
-  }, [result, loading]);
+  }, [currentResult, loading]);
 
   return (
     <main className="relative min-h-screen bg-gradient-to-br from-gray-950 via-black to-gray-900 text-white overflow-hidden">
       <Background activeScan={scanColor} />
       <Navbar />
 
-      {/* 🧠 Title */}
+      {/* Title */}
       <motion.h1
         initial={{ opacity: 0, y: -30 }}
         animate={{ opacity: 1, y: 0 }}
@@ -129,64 +244,101 @@ export default function Dashboard() {
         🛡️ MindShield-AI Dashboard
       </motion.h1>
 
-      {/* 🔎 High-level summary */}
-      <SummaryStrip history={history} loading={loading} />
+      {/* Summary strip */}
+      <SummaryStrip
+        history={history}
+        loading={loading}
+        onClear={handleClearHistory}
+      />
 
-      {/* 🧩 Dashboard Content */}
       <div className="max-w-5xl mx-auto px-4 grid gap-8 pb-24">
-        {/* 🔍 Input Cards */}
+        {/* Tabs */}
+        <div className="flex justify-center">
+          <div className="inline-flex rounded-full bg-black/40 border border-white/10 p-1">
+            {(["phishing", "ip", "dataleak"] as ScanType[]).map((tab) => {
+              const label =
+                tab === "phishing"
+                  ? "Phishing Scanner"
+                  : tab === "ip"
+                  ? "IP / Domain Scanner"
+                  : "Data Leak Scanner";
+              const active = activeView === tab;
+              return (
+                <button
+                  key={tab}
+                  onClick={() => setActiveView(tab)}
+                  className={`px-4 py-1.5 text-xs sm:text-sm rounded-full transition-all ${
+                    active
+                      ? "bg-purple-600 text-white shadow-lg"
+                      : "text-gray-300 hover:bg-white/10"
+                  }`}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Input card per active tab */}
         <motion.div
           initial={{ opacity: 0, y: 40 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.2 }}
+          transition={{ delay: 0.1 }}
           className="space-y-6"
         >
-          <GlassCard
-            title="🔗 Phishing URL Detector"
-            placeholder="Enter URL (e.g. https://example.com)"
-            helperText="Detects spoofed login pages, fake payment portals, and malicious redirects."
-            value={url}
-            onChange={setUrl}
-            onScan={() => handleAnalyze("phishing")}
-            loading={loading && activeScan === "phishing"}
-            color="purple"
-            examples={[
-              "https://secure-paypal.com-login.net",
-              "https://accounts.google.com.security-check.com",
-            ]}
-          />
+          {activeView === "phishing" && (
+            <GlassCard
+              title="🔗 Phishing URL Detector"
+              placeholder="Enter URL (e.g. https://example.com)"
+              helperText="Detects spoofed login pages, fake payment portals, and malicious redirects."
+              value={url}
+              onChange={setUrl}
+              onScan={() => handleAnalyze("phishing")}
+              loading={loading && activeScan === "phishing"}
+              color="purple"
+              examples={[
+                "https://secure-paypal.com-login.net",
+                "https://accounts.google.com.security-check.com",
+              ]}
+            />
+          )}
 
-          <GlassCard
-            title="🌐 Malicious IP / Domain Checker"
-            placeholder="Enter IP or domain (e.g. 8.8.8.8)"
-            helperText="Checks reputation, malware listings, and security vendor flags for IPs/domains."
-            value={ip}
-            onChange={setIp}
-            onScan={() => handleAnalyze("ip")}
-            loading={loading && activeScan === "ip"}
-            color="blue"
-            examples={["5.255.255.5", "malicious-example.com"]}
-          />
+          {activeView === "ip" && (
+            <GlassCard
+              title="🌐 Malicious IP / Domain Checker"
+              placeholder="Enter IP or domain (e.g. 8.8.8.8)"
+              helperText="Checks reputation, malware listings, and security vendor flags for IPs/domains."
+              value={ip}
+              onChange={setIp}
+              onScan={() => handleAnalyze("ip")}
+              loading={loading && activeScan === "ip"}
+              color="blue"
+              examples={["5.255.255.5", "malicious-example.com"]}
+            />
+          )}
 
-          <GlassCard
-            title="🔒 Data Leak Risk Analyzer"
-            placeholder="Enter email (e.g. user@gmail.com)"
-            helperText="Searches breach data for your email and gives AI-powered remediation tips."
-            value={email}
-            onChange={setEmail}
-            onScan={() => handleAnalyze("dataleak")}
-            loading={loading && activeScan === "dataleak"}
-            color="red"
-            examples={["yourname123@gmail.com"]}
-          />
+          {activeView === "dataleak" && (
+            <GlassCard
+              title="🔒 Data Leak Risk Analyzer"
+              placeholder="Enter email (e.g. user@gmail.com)"
+              helperText="Searches breach data for your email and gives AI-powered remediation tips."
+              value={email}
+              onChange={setEmail}
+              onScan={() => handleAnalyze("dataleak")}
+              loading={loading && activeScan === "dataleak"}
+              color="red"
+              examples={["yourname123@gmail.com"]}
+            />
+          )}
         </motion.div>
 
-        {/* 📊 Results + Risk Meter */}
+        {/* Results + Risk Meter for CURRENT tab only */}
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
-          transition={{ delay: 0.3 }}
-          className="mt-8"
+          transition={{ delay: 0.2 }}
+          className="mt-4"
         >
           {loading && (
             <motion.div
@@ -198,73 +350,76 @@ export default function Dashboard() {
             </motion.div>
           )}
 
-          {result && !loading && (
+          {currentResult && !loading && (
             <div className="space-y-6">
-              {/* 🌡️ Risk Meter */}
-              <RiskMeter result={result} />
+              <RiskMeter result={currentResult} />
 
               <motion.div
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 className="grid gap-6 md:grid-cols-2"
               >
-                {result.error && (
+                {currentResult.error && (
                   <Alert className="bg-gradient-to-br from-red-900/60 to-black/70 border border-red-800 rounded-2xl p-6 shadow-lg backdrop-blur-xl">
-                    <h3 className="text-lg font-semibold mb-2 text-red-400">❌ Scan Failed</h3>
-                    <p className="text-gray-300">{result.error}</p>
+                    <h3 className="text-lg font-semibold mb-2 text-red-400">
+                      ❌ Scan Failed
+                    </h3>
+                    <p className="text-gray-300">{currentResult.error}</p>
                   </Alert>
                 )}
 
-                {!result.error && (
+                {!currentResult.error && (
                   <>
                     <ResultCard
                       title="🧠 AI Threat Summary"
                       description={
-                        result.explanation ||
-                        result.aiSummary ||
+                        currentResult.explanation ||
+                        currentResult.aiSummary ||
                         "AI analysis summary not available."
                       }
                       color="purple"
                     />
 
-                    {typeof result.isSuspicious !== "undefined" && (
+                    {typeof currentResult.isSuspicious !== "undefined" && (
                       <ResultCard
                         title="⚠️ Risk Flag"
                         description={
-                          result.isSuspicious
+                          currentResult.isSuspicious
                             ? "Suspicious indicators were detected for this input."
                             : "No strong risk indicators were detected."
                         }
-                        color={result.isSuspicious ? "red" : "green"}
+                        color={currentResult.isSuspicious ? "red" : "green"}
                       />
                     )}
 
-                    {typeof result.maliciousCount !== "undefined" && (
+                    {typeof currentResult.maliciousCount !== "undefined" && (
                       <ResultCard
                         title="🧩 IP / Domain Report"
-                        description={`Detected ${result.maliciousCount} malicious engines flagging this IP.`}
-                        color={result.maliciousCount > 0 ? "red" : "green"}
+                        description={`Detected ${currentResult.maliciousCount} malicious engines flagging this IP.`}
+                        color={
+                          currentResult.maliciousCount > 0 ? "red" : "green"
+                        }
                       />
                     )}
 
-                    {typeof result.breached !== "undefined" && (
+                    {typeof currentResult.breached !== "undefined" && (
                       <ResultCard
                         title="🔒 Data Leak Status"
                         description={
-                          result.breached === null
+                          currentResult.breached === null
                             ? "RapidAPI Breach Directory — AI risk assessment applied."
-                            : result.breached
+                            : currentResult.breached
                             ? "⚠️ This email appears in known breaches!"
                             : "✅ No breaches found for this email."
                         }
                         color={
-                          result.breached === null
+                          currentResult.breached === null
                             ? "blue"
-                            : result.breached
+                            : currentResult.breached
                             ? "red"
                             : "green"
                         }
-                        leaks={result.leaks}
+                        leaks={currentResult.leaks}
                       />
                     )}
                   </>
@@ -274,31 +429,61 @@ export default function Dashboard() {
           )}
         </motion.div>
 
-        {/* 📈 Analytics */}
+        {/* Global Analytics across ALL scans */}
         {history.length > 0 && <Analytics data={history} />}
 
-        {/* 🤖 Chat Assistant */}
+        {/* Recent scan list */}
+        {history.length > 0 && (
+          <RecentScans history={history.slice(0, 6)} />
+        )}
+
+        {/* Chat Assistant */}
         <ChatAssistant />
       </div>
     </main>
   );
 }
 
-/* 🌟 Summary strip at top */
-function SummaryStrip({ history, loading }: { history: ScanResult[]; loading: boolean }) {
+/* Summary strip at top */
+function SummaryStrip({
+  history,
+  loading,
+  onClear,
+}: {
+  history: ScanResult[];
+  loading: boolean;
+  onClear: () => void;
+}) {
   const total = history.length;
   const risky = history.filter((h) => h.isRisky).length;
   const safe = history.filter((h) => !h.isRisky && !h.error).length;
   const lastScan = history[0];
 
+  const scoredHistory = history.filter((h) => typeof h.riskScore === "number");
   const averageScore =
-    history.filter((h) => typeof h.riskScore === "number").reduce((sum, h) => sum + (h.riskScore || 0), 0) /
-      (history.filter((h) => typeof h.riskScore === "number").length || 1);
+    scoredHistory.reduce((sum, h) => sum + (h.riskScore || 0), 0) /
+    (scoredHistory.length || 1);
+
+  const phishingCount = history.filter((h) => h.type === "phishing").length;
+  const ipCount = history.filter((h) => h.type === "ip").length;
+  const dataLeakCount = history.filter((h) => h.type === "dataleak").length;
 
   return (
     <div className="max-w-5xl mx-auto px-4 mb-6 grid gap-4 md:grid-cols-3">
       <Card className="bg-white/5 border border-white/10 rounded-2xl p-4 flex flex-col">
-        <span className="text-xs uppercase tracking-wide text-gray-400">Total scans</span>
+        <div className="flex items-center justify-between">
+          <span className="text-xs uppercase tracking-wide text-gray-400">
+            Total scans
+          </span>
+          {total > 0 && (
+            <button
+              onClick={onClear}
+              className="text-[10px] px-2 py-1 rounded-full bg-gray-900/70 border border-gray-700 text-gray-300 hover:bg-gray-800"
+            >
+              Clear
+            </button>
+          )}
+        </div>
         <span className="text-2xl font-semibold mt-1">{total}</span>
         <span className="text-xs text-gray-500 mt-1">
           {loading ? "Running analysis..." : "Run more scans to build your timeline."}
@@ -306,18 +491,28 @@ function SummaryStrip({ history, loading }: { history: ScanResult[]; loading: bo
       </Card>
 
       <Card className="bg-white/5 border border-white/10 rounded-2xl p-4 flex flex-col">
-        <span className="text-xs uppercase tracking-wide text-gray-400">Risk snapshot</span>
+        <span className="text-xs uppercase tracking-wide text-gray-400">
+          Risk snapshot
+        </span>
         <span className="mt-1 text-sm text-gray-300">
-          🟥 Risky: <span className="font-semibold text-red-400">{risky}</span> · 🟩 Safe:{" "}
+          🟥 Risky:{" "}
+          <span className="font-semibold text-red-400">{risky}</span> · 🟩 Safe:{" "}
           <span className="font-semibold text-green-400">{safe}</span>
         </span>
         <span className="text-xs text-gray-500 mt-1">
-          Avg risk score: {Number.isFinite(averageScore) ? Math.round(averageScore) : 0}/100
+          Avg risk score:{" "}
+          {Number.isFinite(averageScore) ? Math.round(averageScore) : 0}
+          /100
+        </span>
+        <span className="text-[11px] text-gray-500 mt-2">
+          Phishing: {phishingCount} · IP: {ipCount} · Data leak: {dataLeakCount}
         </span>
       </Card>
 
       <Card className="bg-white/5 border border-white/10 rounded-2xl p-4 flex flex-col">
-        <span className="text-xs uppercase tracking-wide text-gray-400">Last scan</span>
+        <span className="text-xs uppercase tracking-wide text-gray-400">
+          Last scan
+        </span>
         {lastScan ? (
           <>
             <span className="mt-1 text-sm text-gray-200 capitalize">
@@ -329,22 +524,41 @@ function SummaryStrip({ history, loading }: { history: ScanResult[]; loading: bo
                 : "✅ Safe"}
             </span>
             <span className="text-xs text-gray-500 mt-1 truncate">
-              {new Date(lastScan.timestamp).toLocaleTimeString()} · {lastScan.input}
+              {new Date(lastScan.timestamp).toLocaleTimeString()} ·{" "}
+              {lastScan.input}
             </span>
           </>
         ) : (
-          <span className="mt-1 text-sm text-gray-400">No scans yet. Try a test URL or IP.</span>
+          <span className="mt-1 text-sm text-gray-400">
+            No scans yet. Try a test URL or IP.
+          </span>
         )}
       </Card>
     </div>
   );
 }
 
-/* 🌡️ Risk Meter Component */
+/* Risk Meter Component */
 function RiskMeter({ result }: { result: ScanResult }) {
-  const score = typeof result.riskScore === "number" ? result.riskScore : result.isRisky ? 70 : 20;
-  const level = result.riskLevel || (score >= 70 ? "High" : score >= 35 ? "Medium" : "Low");
-  const percent = Math.max(0, Math.min(100, score));
+  // Prefer mapped riskScore, fallback to backend finalScore, then heuristic fallback
+  const backendFinal =
+    typeof (result as any).finalScore === "number"
+      ? (result as any).finalScore
+      : undefined;
+
+  const rawScore =
+    typeof result.riskScore === "number"
+      ? result.riskScore
+      : typeof backendFinal === "number"
+      ? backendFinal
+      : result.isRisky
+      ? 70
+      : 20;
+
+  const percent = Math.max(0, Math.min(100, rawScore));
+
+  const level: RiskLevel =
+    result.riskLevel || (percent >= 70 ? "High" : percent >= 35 ? "Medium" : "Low");
 
   let barColor = "bg-green-500";
   if (level === "Medium") barColor = "bg-purple-500";
@@ -358,7 +572,9 @@ function RiskMeter({ result }: { result: ScanResult }) {
             Overall threat score
           </span>
           <div className="flex items-baseline gap-2">
-            <span className="text-3xl font-semibold text-gray-100">{Math.round(percent)}</span>
+            <span className="text-3xl font-semibold text-gray-100">
+              {Math.round(percent)}
+            </span>
             <span className="text-sm text-gray-400">/100 · {level} risk</span>
           </div>
         </div>
@@ -375,14 +591,16 @@ function RiskMeter({ result }: { result: ScanResult }) {
       </div>
 
       <p className="text-xs text-gray-400 mt-2">
-        Higher scores indicate stronger phishing signs, malicious IP reputation, or serious data
-        breaches.
+        Higher scores indicate stronger phishing signs, malicious IP reputation, or
+        serious data breaches.
       </p>
     </Card>
   );
 }
 
-/* 🧊 GlassCard Component */
+/* GlassCard Component */
+type GlassColor = "purple" | "blue" | "red";
+
 function GlassCard({
   title,
   placeholder,
@@ -400,11 +618,11 @@ function GlassCard({
   onChange: (v: string) => void;
   onScan: () => void;
   loading: boolean;
-  color: "purple" | "blue" | "red";
+  color: GlassColor;
   helperText?: string;
   examples?: string[];
 }) {
-  const colorMap: Record<string, string> = {
+  const colorMap: Record<GlassColor, string> = {
     purple: "from-purple-600 to-purple-800 hover:from-purple-500 hover:to-purple-700",
     blue: "from-blue-600 to-blue-800 hover:from-blue-500 hover:to-blue-700",
     red: "from-red-600 to-red-800 hover:from-red-500 hover:to-red-700",
@@ -412,11 +630,20 @@ function GlassCard({
 
   const disabled = loading || !value.trim();
 
+  const handleKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter" && !disabled) {
+      e.preventDefault();
+      onScan();
+    }
+  };
+
   return (
     <Card className="bg-white/5 border border-white/10 p-6 rounded-2xl backdrop-blur-md hover:shadow-lg transition-all duration-300">
       <div className="flex items-center justify-between mb-2 gap-2">
         <h2 className="text-xl font-semibold text-gray-100">{title}</h2>
-        {loading && <span className="text-xs text-purple-300 animate-pulse">Scanning…</span>}
+        {loading && (
+          <span className="text-xs text-purple-300 animate-pulse">Scanning…</span>
+        )}
       </div>
 
       {helperText && <p className="text-xs text-gray-400 mb-3">{helperText}</p>}
@@ -426,6 +653,7 @@ function GlassCard({
           placeholder={placeholder}
           value={value}
           onChange={(e) => onChange(e.target.value)}
+          onKeyDown={handleKeyDown}
           className="bg-gray-800 border-gray-700 text-white placeholder-gray-500"
         />
         <Button
@@ -455,7 +683,7 @@ function GlassCard({
   );
 }
 
-/* 🧠 ResultCard Component with Leak Badges */
+/* ResultCard Component with Leak Badges */
 function ResultCard({
   title,
   description,
@@ -497,14 +725,18 @@ function ResultCard({
         <ul className="text-sm text-gray-400 list-disc pl-6 mt-2 space-y-2">
           {leaks.slice(0, 5).map((l, i) => (
             <li key={i}>
-              <span className="font-medium text-gray-200">{l.name || "Unknown Source"}</span>{" "}
+              <span className="font-medium text-gray-200">
+                {l.name || "Unknown Source"}
+              </span>{" "}
               ({l.domain}) — {l.date || "Date Unknown"}
               {l.dataClasses?.length ? (
                 <div className="flex flex-wrap gap-2 mt-1">
                   {l.dataClasses.map((type, idx) => (
                     <span
                       key={idx}
-                      className={`text-xs px-2 py-1 rounded-full ${getBadgeColor(type)}`}
+                      className={`text-xs px-2 py-1 rounded-full ${getBadgeColor(
+                        type
+                      )}`}
                     >
                       {type}
                     </span>
@@ -516,5 +748,42 @@ function ResultCard({
         </ul>
       ) : null}
     </motion.div>
+  );
+}
+
+/* Small recent scans list */
+function RecentScans({ history }: { history: ScanResult[] }) {
+  if (!history.length) return null;
+
+  const labelMap: Record<ScanType, string> = {
+    phishing: "Phishing",
+    ip: "IP / Domain",
+    dataleak: "Data Leak",
+  };
+
+  return (
+    <Card className="bg-white/5 border border-white/10 rounded-2xl p-4 mt-2">
+      <h3 className="text-sm font-semibold text-gray-100 mb-2">
+        Recent scans
+      </h3>
+      <ul className="space-y-1 text-xs text-gray-300">
+        {history.map((h) => (
+          <li
+            key={h.timestamp + h.input}
+            className="flex items-center justify-between gap-2"
+          >
+            <span className="truncate">
+              <span className="px-2 py-0.5 mr-2 rounded-full bg-gray-900/70 border border-gray-700 text-[10px] uppercase tracking-wide">
+                {labelMap[h.type]}
+              </span>
+              {h.input}
+            </span>
+            <span className="shrink-0 text-[10px] text-gray-500">
+              {new Date(h.timestamp).toLocaleTimeString()}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </Card>
   );
 }

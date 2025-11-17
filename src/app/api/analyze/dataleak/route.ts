@@ -23,9 +23,7 @@ export async function POST(req: Request) {
     // Check RapidAPI key
     if (!process.env.RAPIDAPI_KEY) {
       return NextResponse.json(
-        {
-          error: "Missing RAPIDAPI_KEY for breach lookup.",
-        },
+        { error: "Missing RAPIDAPI_KEY for breach lookup." },
         { status: 500 }
       );
     }
@@ -34,7 +32,7 @@ export async function POST(req: Request) {
     let breaches: any[] = [];
 
     // ----------------------------
-    // 🔍 BREACH LOOKUP (RapidAPI)
+    // 🔍 BREACH LOOKUP
     // ----------------------------
     try {
       const response = await axios.get(
@@ -62,20 +60,19 @@ export async function POST(req: Request) {
     // ----------------------------
     let heuristicScore = 0;
 
-    // More breaches = more score
-    heuristicScore += Math.min(breaches.length * 8, 30);
+    // number of breaches → base score
+    heuristicScore += Math.min(breaches.length * 10, 30);
 
-    // Look at data classes
-    const sensitiveTypes = ["password", "bank", "ssn", "credit", "api key"];
+    // sensitive data classes → big score
+    const sensitiveTypes = ["password", "bank", "credit", "token", "api", "ssn"];
+
     let sensitiveHits = 0;
 
     breaches.forEach((b) => {
       const dataClasses: string[] = b.data_classes || [];
-      dataClasses.forEach((d) => {
-        if (sensitiveTypes.some((s) => d.toLowerCase().includes(s))) {
-          sensitiveHits++;
-        }
-      });
+      sensitiveHits += dataClasses.filter((d) =>
+        sensitiveTypes.some((s) => d.toLowerCase().includes(s))
+      ).length;
     });
 
     heuristicScore += Math.min(sensitiveHits * 5, 30);
@@ -83,7 +80,7 @@ export async function POST(req: Request) {
     heuristicScore = Math.min(heuristicScore, 60);
 
     // ----------------------------
-    // 🧠 AI RISK SCORE (0–100)
+    // 🧠 AI SCORE (0–100)
     // ----------------------------
     let aiScore = 0;
     let aiSummary = "AI summary unavailable.";
@@ -95,18 +92,18 @@ export async function POST(req: Request) {
           {
             role: "system",
             content:
-              "You assess data breach severity. First output a risk score (0–100), then a compact explanation.",
+              "You evaluate breach severity. Output a number (0–100) then a short explanation.",
           },
           {
             role: "user",
             content: `Email: ${email}
-Total breaches: ${breaches.length}
-Data examples: ${breaches
+Breaches: ${breaches.length}
+Classes: ${breaches
               .slice(0, 3)
               .map((b) => (b.data_classes || []).join(", "))
-              .join("; ")}
+              .join(" | ")}
 
-Return format:
+Output:
 <number>
 <short explanation>`,
           },
@@ -115,7 +112,6 @@ Return format:
       });
 
       const text = ai.choices?.[0]?.message?.content || "0 No explanation.";
-
       const numberMatch = text.match(/(\d{1,3})/);
       aiScore = numberMatch ? Math.min(parseInt(numberMatch[1]), 100) : 0;
 
@@ -123,9 +119,12 @@ Return format:
     }
 
     // ----------------------------
-    // 🎯 FINAL RISK SCORE
+    // 🎯 FINAL SCORE (0–100)
     // ----------------------------
-    const finalScore = Math.round(aiScore * 0.6 + heuristicScore * 0.4);
+    const finalScore = Math.min(
+      Math.round(aiScore * 0.6 + heuristicScore * 0.4),
+      100
+    );
 
     // ----------------------------
     // 🌡️ RISK LEVEL + COLOR
@@ -148,7 +147,7 @@ Return format:
     }
 
     // ----------------------------
-    // FINAL RESPONSE
+    // 🟦 FINAL CLEANED RESPONSE
     // ----------------------------
     return NextResponse.json(
       {

@@ -169,7 +169,7 @@ export default function Home() {
       {/* FOOTER */}
       <footer className="py-10 text-center text-gray-500 text-sm">
         <Sparkles className="w-5 h-5 mx-auto mb-2 text-purple-400" />
-        Built with ❤️ by Joy — powered by Next.js, OpenAI & modern cybersecurity.
+        Built with ❤️ by Joy
       </footer>
     </main>
   );
